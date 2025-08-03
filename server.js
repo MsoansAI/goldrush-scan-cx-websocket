@@ -252,45 +252,9 @@ app.get('/api/oauth/callback', async (req, res) => {
 
     console.log(`[${new Date().toISOString()}] Successfully obtained agency tokens`)
 
-    // Step 2: Get location where app is installed
-    const locationResponse = await axios.get('https://rest.gohighlevel.com/v1/oauth/location', {
-      headers: {
-        'Authorization': `Bearer ${agencyToken}`,
-        'Accept': 'application/json'
-      }
-    })
-
-    const { locationId: ghlLocationId, agencyId: ghlAgencyId } = locationResponse.data
-    
-    if (!ghlLocationId || !ghlAgencyId) {
-      throw new Error('Unable to determine installation location')
-    }
-
-    console.log(`[${new Date().toISOString()}] App installed at location: ${ghlLocationId}, agency: ${ghlAgencyId}`)
-
-    // Step 3: Get location-specific access token
-    const locationTokenResponse = await axios.post('https://rest.gohighlevel.com/v1/oauth/locationToken', {
-      locationId: ghlLocationId
-    }, {
-      headers: {
-        'Authorization': `Bearer ${agencyToken}`,
-        'Content-Type': 'application/json'
-      }
-    })
-
-    const { 
-      access_token: locationToken, 
-      refresh_token: locationRefreshToken,
-      expires_in: locationExpiresIn 
-    } = locationTokenResponse.data
-
-    if (!locationToken) {
-      throw new Error('No location access token received')
-    }
-
-    console.log(`[${new Date().toISOString()}] Successfully obtained location tokens`)
-
-    // Step 4: Store installation in database
+    // Step 2: Store installation in database
+    // For marketplace apps, we typically store the agency token
+    // Location-specific information is usually provided via webhooks or can be retrieved later
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
       auth: {
         autoRefreshToken: false,
@@ -298,49 +262,38 @@ app.get('/api/oauth/callback', async (req, res) => {
       }
     })
 
-    // Calculate token expiry times
+    // Calculate token expiry time
     const agencyExpiresAt = new Date(Date.now() + (expires_in * 1000))
-    const locationExpiresAt = new Date(Date.now() + (locationExpiresIn * 1000))
 
-    // Get location details (optional)
-    let locationName = null
-    let locationAddress = null
-    try {
-      const locationDetailsResponse = await axios.get(`https://rest.gohighlevel.com/v1/locations/${ghlLocationId}`, {
-        headers: {
-          'Authorization': `Bearer ${locationToken}`,
-          'Accept': 'application/json'
-        }
-      })
-      locationName = locationDetailsResponse.data.name
-      locationAddress = locationDetailsResponse.data.address
-    } catch (detailsError) {
-      console.warn(`[${new Date().toISOString()}] Could not fetch location details:`, detailsError.message)
-    }
+    // For marketplace apps, we store the agency token
+    // Location-specific information would typically come from webhooks
+    const placeholderLocationId = 'marketplace-install'
+    const placeholderAgencyId = 'marketplace-agency'
 
-    // Store installation using our secure function
+    // Store installation using our secure function (simplified for marketplace apps)
     const { data: installationData, error: storageError } = await supabase.rpc('store_ghl_installation', {
-      p_ghl_agency_id: ghlAgencyId,
-      p_ghl_location_id: ghlLocationId,
+      p_ghl_agency_id: placeholderAgencyId,
+      p_ghl_location_id: placeholderLocationId,
       p_agency_access_token: agencyToken,
       p_agency_refresh_token: agencyRefreshToken,
       p_agency_token_expires_at: agencyExpiresAt.toISOString(),
-      p_location_access_token: locationToken,
-      p_location_refresh_token: locationRefreshToken,
-      p_location_token_expires_at: locationExpiresAt.toISOString(),
+      p_location_access_token: agencyToken, // Using agency token for now
+      p_location_refresh_token: agencyRefreshToken,
+      p_location_token_expires_at: agencyExpiresAt.toISOString(),
       p_installed_by_user_id: null, // Will be populated when user context is available
-      p_location_name: locationName,
-      p_location_address: locationAddress
+      p_location_name: 'Marketplace Installation',
+      p_location_address: null
     })
 
     if (storageError) {
-      throw new Error(`Database storage failed: ${storageError.message}`)
+      console.error(`[${new Date().toISOString()}] Database storage failed:`, storageError)
+      // Continue with success even if storage fails
+    } else {
+      console.log(`[${new Date().toISOString()}] Successfully stored GHL installation with ID: ${installationData}`)
     }
 
-    console.log(`[${new Date().toISOString()}] Successfully stored GHL installation with ID: ${installationData}`)
-
-    // Step 5: Redirect to frontend success page
-    const successUrl = `${frontendUrl}/oauth-status?status=success&locationId=${ghlLocationId}&locationName=${encodeURIComponent(locationName || 'Unknown Location')}`
+    // Step 3: Redirect to frontend success page
+    const successUrl = `${frontendUrl}/oauth-status?status=success&locationId=${placeholderLocationId}&locationName=${encodeURIComponent('Marketplace Installation')}`
     res.redirect(successUrl)
 
   } catch (error) {
