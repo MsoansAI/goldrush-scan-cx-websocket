@@ -230,15 +230,17 @@ app.get('/api/oauth/callback', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Processing OAuth callback with code: ${code.substring(0, 10)}...`)
 
     // Step 1: Exchange code for agency tokens using GoHighLevel API
-    const tokenResponse = await axios.post('https://rest.gohighlevel.com/v1/oauth/token', {
+    const tokenRequestBody = new URLSearchParams({
       grant_type: 'authorization_code',
       code: code,
       client_id: GHL_CLIENT_ID,
       client_secret: GHL_CLIENT_SECRET,
       redirect_uri: GHL_REDIRECT_URI
-    }, {
+    })
+
+    const tokenResponse = await axios.post('https://services.leadconnectorhq.com/oauth/token', tokenRequestBody, {
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/x-www-form-urlencoded'
       }
     })
 
