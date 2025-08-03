@@ -208,8 +208,9 @@ app.get('/api/oauth/callback', async (req, res) => {
     const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
     const GHL_REDIRECT_URI = `${serverUrl}/api/oauth/callback`
 
-    // Get frontend URL from request origin or referer (for iframe support)
-    const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
+    // Get frontend URL - for marketplace installations, always use your frontend
+    // The marketplace origin/referer won't have your oauth-status page
+    const frontendUrl = 'https://grsc-scan-frontend.vercel.app'
 
     // Handle OAuth errors
     if (error) {
@@ -299,8 +300,8 @@ app.get('/api/oauth/callback', async (req, res) => {
   } catch (error) {
     console.error(`[${new Date().toISOString()}] OAuth callback error:`, error.message)
     
-    // Get frontend URL for error redirect (define it here since it might not be defined in catch block)
-    const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
+    // Get frontend URL for error redirect - always use your frontend for marketplace apps
+    const frontendUrl = 'https://grsc-scan-frontend.vercel.app'
     
     // Extract meaningful error message
     let errorMessage = 'OAuth flow failed'
