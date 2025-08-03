@@ -12,8 +12,35 @@ require('dotenv').config()
 const app = express()
 const server = createServer(app)
 
+// CORS Configuration
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true)
+    
+    const allowedOrigins = [
+      'https://app.gohighlevel.com',
+      'https://app.leadconnectorhq.com', 
+      'https://app.msoans.ai',
+      'https://grsc-scan-frontend.vercel.app',
+      'http://localhost:3000', // For development
+      'http://localhost:3001'  // For development
+    ]
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true)
+    } else {
+      console.warn(`[${new Date().toISOString()}] CORS blocked origin: ${origin}`)
+      callback(new Error('Not allowed by CORS'))
+    }
+  },
+  credentials: true, // Allow cookies/credentials
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}
+
 // Middleware
-app.use(cors())
+app.use(cors(corsOptions))
 app.use(express.json())
 
 // Health check endpoint for Railway and monitoring
@@ -152,15 +179,22 @@ app.post('/api/messages/cleanup', (req, res) => {
 // OAuth Initiate Endpoint - Phase 1
 app.get('/api/ghl-oauth/initiate', (req, res) => {
   try {
-    const { GHL_CLIENT_ID, GHL_REDIRECT_URI, GHL_SCOPES } = process.env
+    const { GHL_CLIENT_ID, GHL_SCOPES } = process.env
 
-    if (!GHL_CLIENT_ID || !GHL_REDIRECT_URI || !GHL_SCOPES) {
+    if (!GHL_CLIENT_ID || !GHL_SCOPES) {
       console.error(`[${new Date().toISOString()}] Missing OAuth environment variables`)
       return res.status(500).json({
         success: false,
         error: 'OAuth configuration incomplete'
       })
     }
+
+    // Get frontend URL from request origin or referer (for iframe support)
+    const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
+
+    // Define the redirect URI based on the current server URL
+    const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
+    const GHL_REDIRECT_URI = `${serverUrl}/api/ghl-oauth/callback`
 
     // Construct GoHighLevel Authorization URL
     const authUrl = new URL('https://oauth.integrately.com/oauth/authorize')
@@ -191,22 +225,29 @@ app.get('/api/ghl-oauth/initiate', (req, res) => {
 app.get('/api/ghl-oauth/callback', async (req, res) => {
   try {
     const { code, state, error } = req.query
-    const { GHL_CLIENT_ID, GHL_CLIENT_SECRET, GHL_REDIRECT_URI, FRONTEND_URL } = process.env
+    const { GHL_CLIENT_ID, GHL_CLIENT_SECRET } = process.env
+
+    // Define the redirect URI based on the current server URL (must match the one used in initiate)
+    const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
+    const GHL_REDIRECT_URI = `${serverUrl}/api/ghl-oauth/callback`
+
+    // Get frontend URL from request origin or referer (for iframe support)
+    const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
 
     // Handle OAuth errors
     if (error) {
       console.error(`[${new Date().toISOString()}] OAuth callback error from GHL:`, error)
-      return res.redirect(`${FRONTEND_URL}/ghl-oauth-status?status=error&message=${encodeURIComponent(error)}`)
+      return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent(error)}`)
     }
 
     if (!code) {
       console.error(`[${new Date().toISOString()}] No authorization code received`)
-      return res.redirect(`${FRONTEND_URL}/ghl-oauth-status?status=error&message=No authorization code received`)
+      return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=No authorization code received`)
     }
 
     if (!GHL_CLIENT_ID || !GHL_CLIENT_SECRET || !GHL_REDIRECT_URI) {
       console.error(`[${new Date().toISOString()}] Missing OAuth client credentials`)
-      return res.redirect(`${FRONTEND_URL}/ghl-oauth-status?status=error&message=OAuth configuration incomplete`)
+      return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=OAuth configuration incomplete`)
     }
 
     console.log(`[${new Date().toISOString()}] Processing OAuth callback with code: ${code.substring(0, 10)}...`)
@@ -320,7 +361,7 @@ app.get('/api/ghl-oauth/callback', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Successfully stored GHL installation with ID: ${installationData}`)
 
     // Step 5: Redirect to frontend success page
-    const successUrl = `${FRONTEND_URL}/ghl-oauth-status?status=success&locationId=${ghlLocationId}&locationName=${encodeURIComponent(locationName || 'Unknown Location')}`
+    const successUrl = `${frontendUrl}/ghl-oauth-status?status=success&locationId=${ghlLocationId}&locationName=${encodeURIComponent(locationName || 'Unknown Location')}`
     res.redirect(successUrl)
 
   } catch (error) {
@@ -336,7 +377,7 @@ app.get('/api/ghl-oauth/callback', async (req, res) => {
       errorMessage = error.message
     }
 
-    const errorUrl = `${process.env.FRONTEND_URL}/ghl-oauth-status?status=error&message=${encodeURIComponent(errorMessage)}`
+    const errorUrl = `${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent(errorMessage)}`
     res.redirect(errorUrl)
   }
 })

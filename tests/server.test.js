@@ -17,9 +17,9 @@ describe('WebSocket Server', () => {
     // Set up OAuth environment variables for testing
     process.env.GHL_CLIENT_ID = 'test-client-id'
     process.env.GHL_CLIENT_SECRET = 'test-client-secret'
-    process.env.GHL_REDIRECT_URI = 'http://localhost:3001/api/ghl-oauth/callback'
     process.env.GHL_SCOPES = 'locations.readonly users.readonly'
-    process.env.FRONTEND_URL = 'http://localhost:3000'
+    process.env.CORS_ORIGIN = 'https://grsc-scan-frontend.vercel.app'
+    process.env.SERVER_URL = 'http://localhost:3001'
     process.env.SUPABASE_URL = 'https://test.supabase.co'
     process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key'
     process.env.GHL_SHARED_SECRET = 'test-shared-secret-32-characters-long!'
@@ -296,14 +296,21 @@ describe('WebSocket Server', () => {
 
     // Mock OAuth Initiate Endpoint
     app.get('/api/ghl-oauth/initiate', (req, res) => {
-      const { GHL_CLIENT_ID, GHL_REDIRECT_URI, GHL_SCOPES } = process.env
+      const { GHL_CLIENT_ID, GHL_SCOPES } = process.env
 
-      if (!GHL_CLIENT_ID || !GHL_REDIRECT_URI || !GHL_SCOPES) {
+      if (!GHL_CLIENT_ID || !GHL_SCOPES) {
         return res.status(500).json({
           success: false,
           error: 'OAuth configuration incomplete'
         })
       }
+
+      // Define the redirect URI based on the current server URL
+      const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
+      const GHL_REDIRECT_URI = `${serverUrl}/api/ghl-oauth/callback`
+
+      // Get frontend URL from request origin or referer (for iframe support)
+      const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
 
       // Construct authorization URL
       const authUrl = new URL('https://oauth.integrately.com/oauth/authorize')
@@ -322,27 +329,29 @@ describe('WebSocket Server', () => {
     // Mock OAuth Callback Endpoint
     app.get('/api/ghl-oauth/callback', async (req, res) => {
       const { code, state, error } = req.query
-      const { FRONTEND_URL } = process.env
+      
+      // Get frontend URL from request origin or referer (for iframe support)
+      const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
 
       // Handle OAuth errors
       if (error) {
-        return res.redirect(`${FRONTEND_URL}/ghl-oauth-status?status=error&message=${encodeURIComponent(error)}`)
+        return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent(error)}`)
       }
 
       if (!code) {
-        return res.redirect(`${FRONTEND_URL}/ghl-oauth-status?status=error&message=No authorization code received`)
+        return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=No authorization code received`)
       }
 
       // Mock successful OAuth flow
       if (code === 'test-auth-code') {
         // Simulate successful token exchange and installation storage
-        const successUrl = `${FRONTEND_URL}/ghl-oauth-status?status=success&locationId=test-location-123&locationName=${encodeURIComponent('Test Location')}`
+        const successUrl = `${frontendUrl}/ghl-oauth-status?status=success&locationId=test-location-123&locationName=${encodeURIComponent('Test Location')}`
         return res.redirect(successUrl)
       }
 
       // Mock error case
-      const errorUrl = `${FRONTEND_URL}/ghl-oauth-status?status=error&message=${encodeURIComponent('OAuth flow failed')}`
-      res.redirect(errorUrl)
+              const errorUrl = `${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent('OAuth flow failed')}`
+        res.redirect(errorUrl)
     })
 
     // Mock GHL Locations List Endpoint
