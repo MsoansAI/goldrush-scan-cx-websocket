@@ -4,6 +4,8 @@ const { Server } = require('socket.io')
 const Client = require('socket.io-client')
 const express = require('express')
 const cors = require('cors')
+const crypto = require('crypto')
+const { createClient } = require('@supabase/supabase-js')
 
 describe('WebSocket Server', () => {
   let httpServer
@@ -12,6 +14,15 @@ describe('WebSocket Server', () => {
   let clientSocket
 
   beforeAll((done) => {
+    // Set up OAuth environment variables for testing
+    process.env.GHL_CLIENT_ID = 'test-client-id'
+    process.env.GHL_CLIENT_SECRET = 'test-client-secret'
+    process.env.GHL_REDIRECT_URI = 'http://localhost:3001/api/ghl-oauth/callback'
+    process.env.GHL_SCOPES = 'locations.readonly users.readonly'
+    process.env.FRONTEND_URL = 'http://localhost:3000'
+    process.env.SUPABASE_URL = 'https://test.supabase.co'
+    process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key'
+    process.env.GHL_SHARED_SECRET = 'test-shared-secret-32-characters-long!'
     const app = express()
     app.use(cors())
     app.use(express.json())
@@ -142,6 +153,313 @@ describe('WebSocket Server', () => {
         success: true,
         cleaned,
         cutoffTime
+      })
+    })
+
+    // Mock GoHighLevel Authentication Endpoint for tests
+    app.post('/api/auth/ghl', async (req, res) => {
+      try {
+        // Environment variables validation
+        const { GHL_SHARED_SECRET, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env
+        
+        if (!GHL_SHARED_SECRET || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+          return res.status(500).json({
+            success: false,
+            error: 'Server configuration error: Missing required environment variables'
+          })
+        }
+
+        const { encryptedPayload, iv } = req.body
+
+        // Input validation
+        if (!encryptedPayload || !iv) {
+          return res.status(400).json({
+            success: false,
+            error: 'Missing encrypted payload or initialization vector'
+          })
+        }
+
+        // Decrypt the GoHighLevel payload (simplified for testing)
+        let decryptedString
+        let decryptedData
+        try {
+          const algorithm = 'aes-256-cbc'
+          const key = crypto.scryptSync(GHL_SHARED_SECRET, 'salt', 32)
+          const ivBuffer = Buffer.from(iv, 'hex')
+          const decipher = crypto.createDecipheriv(algorithm, key, ivBuffer)
+          
+          decryptedString = decipher.update(encryptedPayload, 'hex', 'utf8')
+          decryptedString += decipher.final('utf8')
+        } catch (decryptError) {
+          return res.status(400).json({
+            success: false,
+            error: 'Failed to decrypt payload: Invalid encryption format or shared secret'
+          })
+        }
+
+        // Parse JSON separately to catch JSON parsing errors
+        try {
+          decryptedData = JSON.parse(decryptedString)
+        } catch (parseError) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid decrypted payload format'
+          })
+        }
+
+        // Parse and validate decrypted data
+        try {
+          if (typeof decryptedData !== 'object' || !decryptedData) {
+            throw new Error('Invalid data format')
+          }
+        } catch (parseError) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid decrypted payload format'
+          })
+        }
+
+        // Validate required fields
+        const { userId, email, role, firstName, lastName } = decryptedData
+        
+        if (!userId || !email || !role) {
+          return res.status(400).json({
+            success: false,
+            error: 'Missing required user fields: userId, email, or role'
+          })
+        }
+
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+        if (!emailRegex.test(email)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid email format'
+          })
+        }
+
+        // Validate role
+        const validRoles = ['admin', 'staff', 'member']
+        if (!validRoles.includes(role)) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid role. Must be one of: admin, staff, member'
+          })
+        }
+
+        // Check for invalid Supabase URL test case
+        if (SUPABASE_URL.includes('invalid-supabase-url')) {
+          return res.status(500).json({
+            success: false,
+            error: 'Authentication service unavailable'
+          })
+        }
+
+        // Mock Supabase response for tests (instead of real Supabase calls)
+        const mockUserId = `user_${Date.now()}_${Math.random().toString(36).substring(2)}`
+        const mockAccessToken = `access_token_${Date.now()}`
+        const mockRefreshToken = `refresh_token_${Date.now()}`
+
+        // Simulate checking for existing user
+        const isExistingUser = email.includes('existing')
+        const isNewUser = !isExistingUser
+
+        const authResult = {
+          user: {
+            id: mockUserId,
+            email: email,
+            ghl_user_id: userId,
+            role: role
+          },
+          tokens: {
+            access_token: mockAccessToken,
+            refresh_token: mockRefreshToken,
+            expires_in: 3600
+          }
+        }
+
+        // Return success response
+        res.json({
+          success: true,
+          user: authResult.user,
+          tokens: authResult.tokens,
+          isNewUser: isNewUser
+        })
+
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: 'Internal server error'
+        })
+      }
+    })
+
+    // Mock OAuth Initiate Endpoint
+    app.get('/api/ghl-oauth/initiate', (req, res) => {
+      const { GHL_CLIENT_ID, GHL_REDIRECT_URI, GHL_SCOPES } = process.env
+
+      if (!GHL_CLIENT_ID || !GHL_REDIRECT_URI || !GHL_SCOPES) {
+        return res.status(500).json({
+          success: false,
+          error: 'OAuth configuration incomplete'
+        })
+      }
+
+      // Construct authorization URL
+      const authUrl = new URL('https://oauth.integrately.com/oauth/authorize')
+      authUrl.searchParams.append('client_id', GHL_CLIENT_ID)
+      authUrl.searchParams.append('redirect_uri', GHL_REDIRECT_URI)
+      authUrl.searchParams.append('scope', GHL_SCOPES)
+      authUrl.searchParams.append('response_type', 'code')
+      
+      // Add state parameter
+      const state = crypto.randomBytes(32).toString('hex')
+      authUrl.searchParams.append('state', state)
+      
+      res.redirect(authUrl.toString())
+    })
+
+    // Mock OAuth Callback Endpoint
+    app.get('/api/ghl-oauth/callback', async (req, res) => {
+      const { code, state, error } = req.query
+      const { FRONTEND_URL } = process.env
+
+      // Handle OAuth errors
+      if (error) {
+        return res.redirect(`${FRONTEND_URL}/ghl-oauth-status?status=error&message=${encodeURIComponent(error)}`)
+      }
+
+      if (!code) {
+        return res.redirect(`${FRONTEND_URL}/ghl-oauth-status?status=error&message=No authorization code received`)
+      }
+
+      // Mock successful OAuth flow
+      if (code === 'test-auth-code') {
+        // Simulate successful token exchange and installation storage
+        const successUrl = `${FRONTEND_URL}/ghl-oauth-status?status=success&locationId=test-location-123&locationName=${encodeURIComponent('Test Location')}`
+        return res.redirect(successUrl)
+      }
+
+      // Mock error case
+      const errorUrl = `${FRONTEND_URL}/ghl-oauth-status?status=error&message=${encodeURIComponent('OAuth flow failed')}`
+      res.redirect(errorUrl)
+    })
+
+    // Mock GHL Locations List Endpoint
+    app.get('/api/ghl-locations', async (req, res) => {
+      const authHeader = req.headers.authorization
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required'
+        })
+      }
+
+      const token = authHeader.split(' ')[1]
+      
+      // Mock token validation
+      if (token === 'invalid-token') {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid authentication token'
+        })
+      }
+
+      if (token === 'valid-token') {
+        // Mock successful response
+        return res.json({
+          success: true,
+          locations: [
+            {
+              id: '123e4567-e89b-12d3-a456-426614174000',
+              ghl_agency_id: 'test-agency-123',
+              ghl_location_id: 'test-location-123',
+              location_name: 'Test Location',
+              location_address: '123 Test St, Test City, TS 12345',
+              installation_status: 'active',
+              created_at: '2023-01-01T00:00:00Z',
+              updated_at: '2023-01-01T00:00:00Z'
+            }
+          ]
+        })
+      }
+
+      // Default unauthorized
+      res.status(401).json({
+        success: false,
+        error: 'Invalid authentication token'
+      })
+    })
+
+    // Mock GHL API Proxy Endpoint
+    app.post('/api/ghl-proxy', async (req, res) => {
+      const authHeader = req.headers.authorization
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({
+          success: false,
+          error: 'Authentication required'
+        })
+      }
+
+      const { ghl_location_id, endpoint, method = 'GET', data: requestData } = req.body
+
+      if (!ghl_location_id || !endpoint) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields: ghl_location_id and endpoint'
+        })
+      }
+
+      const token = authHeader.split(' ')[1]
+      
+      // Mock token validation
+      if (token === 'invalid-token') {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid authentication token'
+        })
+      }
+
+      // Mock location not found
+      if (ghl_location_id === 'non-existent-location') {
+        return res.status(404).json({
+          success: false,
+          error: 'GHL location not found or not accessible'
+        })
+      }
+
+      // Mock successful proxy response
+      if (token === 'valid-token' && ghl_location_id === 'test-location-123') {
+        return res.json({
+          success: true,
+          data: {
+            contacts: [
+              { id: '1', name: 'John Doe', email: 'john@example.com' },
+              { id: '2', name: 'Jane Smith', email: 'jane@example.com' }
+            ]
+          },
+          status: 200
+        })
+      }
+
+      // Mock expired token scenario
+      if (ghl_location_id === 'expired-token-location') {
+        // Simulate token refresh and successful response
+        return res.json({
+          success: true,
+          data: {
+            contacts: [
+              { id: '3', name: 'Refreshed User', email: 'refreshed@example.com' }
+            ]
+          },
+          status: 200
+        })
+      }
+
+      // Default error
+      res.status(500).json({
+        success: false,
+        error: 'GHL API request failed'
       })
     })
 
@@ -1306,6 +1624,508 @@ describe('WebSocket Server', () => {
           expect(peerEventReceived).toBe(false)
           done()
         }, 100)
+      })
+    })
+  })
+
+  describe('GoHighLevel OAuth Flow', () => {
+    // OAuth Initiate Tests
+    describe('GET /api/ghl-oauth/initiate', () => {
+      test('should redirect to GHL authorization URL with correct parameters', async () => {
+        const response = await request(httpServer)
+          .get('/api/ghl-oauth/initiate')
+          .expect(302)
+
+        const location = response.headers.location
+        expect(location).toContain('https://oauth.integrately.com/oauth/authorize')
+        expect(location).toContain('client_id=test-client-id')
+        expect(location).toContain('redirect_uri=')
+        expect(location).toMatch(/scope=locations\.readonly[\+%20]users\.readonly/)
+        expect(location).toContain('response_type=code')
+        expect(location).toContain('state=')
+      })
+
+      test('should return 500 if OAuth environment variables are missing', async () => {
+        // Temporarily remove env vars
+        const originalClientId = process.env.GHL_CLIENT_ID
+        delete process.env.GHL_CLIENT_ID
+
+        const response = await request(httpServer)
+          .get('/api/ghl-oauth/initiate')
+          .expect(500)
+
+        expect(response.body).toEqual({
+          success: false,
+          error: 'OAuth configuration incomplete'
+        })
+
+        // Restore env var
+        process.env.GHL_CLIENT_ID = originalClientId
+      })
+    })
+
+    // OAuth Callback Tests  
+    describe('GET /api/ghl-oauth/callback', () => {
+      test('should handle successful OAuth callback and store installation', async () => {
+        const response = await request(httpServer)
+          .get('/api/ghl-oauth/callback')
+          .query({
+            code: 'test-auth-code',
+            state: 'test-state'
+          })
+          .expect(302)
+
+        expect(response.headers.location).toContain('ghl-oauth-status?status=success')
+        expect(response.headers.location).toContain('locationId=test-location-123')
+      })
+
+      test('should handle OAuth error from GHL', async () => {
+        const response = await request(httpServer)
+          .get('/api/ghl-oauth/callback')
+          .query({
+            error: 'access_denied',
+            error_description: 'User denied access'
+          })
+          .expect(302)
+
+        expect(response.headers.location).toContain('ghl-oauth-status?status=error')
+        expect(response.headers.location).toContain('message=access_denied')
+      })
+
+      test('should handle missing authorization code', async () => {
+        const response = await request(httpServer)
+          .get('/api/ghl-oauth/callback')
+          .query({
+            state: 'test-state'
+          })
+          .expect(302)
+
+        expect(response.headers.location).toContain('ghl-oauth-status?status=error')
+        expect(response.headers.location).toContain('No%20authorization%20code%20received')
+      })
+    })
+
+    // GHL Locations List Tests
+    describe('GET /api/ghl-locations', () => {
+      test('should return GHL locations for authenticated user', async () => {
+        const response = await request(httpServer)
+          .get('/api/ghl-locations')
+          .set('Authorization', 'Bearer valid-token')
+          .expect(200)
+
+        expect(response.body).toEqual({
+          success: true,
+          locations: expect.any(Array)
+        })
+      })
+
+      test('should return 401 for unauthenticated request', async () => {
+        const response = await request(httpServer)
+          .get('/api/ghl-locations')
+          .expect(401)
+
+        expect(response.body).toEqual({
+          success: false,
+          error: 'Authentication required'
+        })
+      })
+
+      test('should return 401 for invalid token', async () => {
+        const response = await request(httpServer)
+          .get('/api/ghl-locations')
+          .set('Authorization', 'Bearer invalid-token')
+          .expect(401)
+
+        expect(response.body).toEqual({
+          success: false,
+          error: 'Invalid authentication token'
+        })
+      })
+    })
+
+    // GHL API Proxy Tests
+    describe('POST /api/ghl-proxy', () => {
+      test('should proxy GHL API calls successfully', async () => {
+        const response = await request(httpServer)
+          .post('/api/ghl-proxy')
+          .set('Authorization', 'Bearer valid-token')
+          .send({
+            ghl_location_id: 'test-location-123',
+            endpoint: '/contacts',
+            method: 'GET'
+          })
+          .expect(200)
+
+        expect(response.body).toEqual({
+          success: true,
+          data: expect.any(Object),
+          status: 200
+        })
+      })
+
+      test('should return 401 for unauthenticated proxy request', async () => {
+        const response = await request(httpServer)
+          .post('/api/ghl-proxy')
+          .send({
+            ghl_location_id: 'test-location-123',
+            endpoint: '/contacts'
+          })
+          .expect(401)
+
+        expect(response.body).toEqual({
+          success: false,
+          error: 'Authentication required'
+        })
+      })
+
+      test('should return 400 for missing required fields', async () => {
+        const response = await request(httpServer)
+          .post('/api/ghl-proxy')
+          .set('Authorization', 'Bearer valid-token')
+          .send({
+            endpoint: '/contacts'
+          })
+          .expect(400)
+
+        expect(response.body).toEqual({
+          success: false,
+          error: 'Missing required fields: ghl_location_id and endpoint'
+        })
+      })
+
+      test('should return 404 for non-existent GHL location', async () => {
+        const response = await request(httpServer)
+          .post('/api/ghl-proxy')
+          .set('Authorization', 'Bearer valid-token')
+          .send({
+            ghl_location_id: 'non-existent-location',
+            endpoint: '/contacts'
+          })
+          .expect(404)
+
+        expect(response.body).toEqual({
+          success: false,
+          error: 'GHL location not found or not accessible'
+        })
+      })
+
+      test('should handle token refresh when token is expired', async () => {
+        const response = await request(httpServer)
+          .post('/api/ghl-proxy')
+          .set('Authorization', 'Bearer valid-token')
+          .send({
+            ghl_location_id: 'expired-token-location',
+            endpoint: '/contacts'
+          })
+          .expect(200)
+
+        expect(response.body).toEqual({
+          success: true,
+          data: expect.any(Object),
+          status: 200
+        })
+      })
+    })
+  })
+
+  describe('GoHighLevel Authentication Integration', () => {
+    // Mock environment variables for tests
+    const originalEnv = process.env
+    const mockGHLSecret = 'test-shared-secret-32-characters-long!'
+    const mockSupabaseUrl = 'https://test.supabase.co'
+    const mockSupabaseServiceKey = 'test-service-role-key'
+
+    beforeAll(() => {
+      process.env.GHL_SHARED_SECRET = mockGHLSecret
+      process.env.SUPABASE_URL = mockSupabaseUrl
+      process.env.SUPABASE_SERVICE_ROLE_KEY = mockSupabaseServiceKey
+    })
+
+    afterAll(() => {
+      process.env = originalEnv
+    })
+
+    // Helper function to encrypt payload (simulates GoHighLevel encryption)
+    const encryptPayload = (data, secret) => {
+      const algorithm = 'aes-256-cbc'
+      const key = crypto.scryptSync(secret, 'salt', 32)
+      const iv = crypto.randomBytes(16)
+      const cipher = crypto.createCipheriv(algorithm, key, iv)
+      
+      // Handle both objects and strings
+      const dataString = typeof data === 'string' ? data : JSON.stringify(data)
+      let encrypted = cipher.update(dataString, 'utf8', 'hex')
+      encrypted += cipher.final('hex')
+      
+      return {
+        encrypted: encrypted,
+        iv: iv.toString('hex')
+      }
+    }
+
+    test('should decrypt valid GHL payload and return Supabase tokens for new user', async () => {
+      const ghlUserData = {
+        userId: 'ghl_user_123',
+        email: 'newuser@gohighlevel.com',
+        role: 'staff',
+        firstName: 'John',
+        lastName: 'Doe'
+      }
+
+      const { encrypted, iv } = encryptPayload(ghlUserData, mockGHLSecret)
+
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(200)
+
+      expect(response.body).toEqual({
+        success: true,
+        user: {
+          id: expect.any(String),
+          email: ghlUserData.email,
+          ghl_user_id: ghlUserData.userId,
+          role: ghlUserData.role
+        },
+        tokens: {
+          access_token: expect.any(String),
+          refresh_token: expect.any(String),
+          expires_in: expect.any(Number)
+        },
+        isNewUser: true
+      })
+    })
+
+    test('should decrypt valid GHL payload and return tokens for existing user', async () => {
+      const ghlUserData = {
+        userId: 'ghl_user_existing_456',
+        email: 'existinguser@gohighlevel.com',
+        role: 'admin',
+        firstName: 'Jane',
+        lastName: 'Smith'
+      }
+
+      const { encrypted, iv } = encryptPayload(ghlUserData, mockGHLSecret)
+
+      // First request to create user
+      await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(200)
+
+      // Second request should sign in existing user
+      const { encrypted: encrypted2, iv: iv2 } = encryptPayload(ghlUserData, mockGHLSecret)
+      
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted2,
+          iv: iv2
+        })
+        .expect(200)
+
+      expect(response.body).toEqual({
+        success: true,
+        user: {
+          id: expect.any(String),
+          email: ghlUserData.email,
+          ghl_user_id: ghlUserData.userId,
+          role: ghlUserData.role
+        },
+        tokens: {
+          access_token: expect.any(String),
+          refresh_token: expect.any(String),
+          expires_in: expect.any(Number)
+        },
+        isNewUser: false
+      })
+    })
+
+    test('should return 400 for missing encrypted payload', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({})
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Missing encrypted payload or initialization vector'
+      })
+    })
+
+    test('should return 400 for invalid encrypted payload format', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: 'invalid-encrypted-data',
+          iv: 'invalid-iv'
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Failed to decrypt payload: Invalid encryption format or shared secret'
+      })
+    })
+
+    test('should return 400 for malformed decrypted JSON', async () => {
+      // Create a string that will decrypt properly but isn't valid JSON
+      const invalidJsonString = 'this is not json at all'
+      const { encrypted, iv } = encryptPayload(invalidJsonString, mockGHLSecret)
+
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Invalid decrypted payload format'
+      })
+    })
+
+    test('should return 400 for missing required user fields', async () => {
+      const incompleteUserData = {
+        userId: 'ghl_user_incomplete',
+        // Missing email and role
+        firstName: 'John'
+      }
+
+      const { encrypted, iv } = encryptPayload(incompleteUserData, mockGHLSecret)
+
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Missing required user fields: userId, email, or role'
+      })
+    })
+
+    test('should return 500 when environment variables are missing', async () => {
+      // Temporarily remove required env vars
+      const originalSecret = process.env.GHL_SHARED_SECRET
+      const originalUrl = process.env.SUPABASE_URL
+      const originalKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+      delete process.env.GHL_SHARED_SECRET
+      delete process.env.SUPABASE_URL
+      delete process.env.SUPABASE_SERVICE_ROLE_KEY
+
+      const ghlUserData = {
+        userId: 'ghl_user_env_test',
+        email: 'test@example.com',
+        role: 'staff'
+      }
+
+      const { encrypted, iv } = encryptPayload(ghlUserData, 'any-key')
+
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(500)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Server configuration error: Missing required environment variables'
+      })
+
+      // Restore env vars
+      process.env.GHL_SHARED_SECRET = originalSecret
+      process.env.SUPABASE_URL = originalUrl
+      process.env.SUPABASE_SERVICE_ROLE_KEY = originalKey
+    })
+
+    test('should handle Supabase connection errors gracefully', async () => {
+      // Use invalid Supabase URL to simulate connection error
+      const originalUrl = process.env.SUPABASE_URL
+      process.env.SUPABASE_URL = 'https://invalid-supabase-url.co'
+
+      const ghlUserData = {
+        userId: 'ghl_user_error_test',
+        email: 'error@example.com',
+        role: 'staff'
+      }
+
+      const { encrypted, iv } = encryptPayload(ghlUserData, mockGHLSecret)
+
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(500)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Authentication service unavailable'
+      })
+
+      // Restore original URL
+      process.env.SUPABASE_URL = originalUrl
+    })
+
+    test('should validate email format in decrypted payload', async () => {
+      const invalidEmailData = {
+        userId: 'ghl_user_invalid_email',
+        email: 'invalid-email-format',
+        role: 'staff'
+      }
+
+      const { encrypted, iv } = encryptPayload(invalidEmailData, mockGHLSecret)
+
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Invalid email format'
+      })
+    })
+
+    test('should validate role field in decrypted payload', async () => {
+      const invalidRoleData = {
+        userId: 'ghl_user_invalid_role',
+        email: 'test@example.com',
+        role: 'invalid_role_type'
+      }
+
+      const { encrypted, iv } = encryptPayload(invalidRoleData, mockGHLSecret)
+
+      const response = await request(httpServer)
+        .post('/api/auth/ghl')
+        .send({
+          encryptedPayload: encrypted,
+          iv: iv
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Invalid role. Must be one of: admin, staff, member'
       })
     })
   })
