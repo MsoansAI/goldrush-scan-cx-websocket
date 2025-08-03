@@ -4,6 +4,7 @@ const { createServer } = require('http')
 const { Server } = require('socket.io')
 const cors = require('cors')
 const crypto = require('crypto')
+const CryptoJS = require('crypto-js')
 const axios = require('axios')
 const cron = require('node-cron')
 const { createClient } = require('@supabase/supabase-js')
@@ -319,6 +320,75 @@ app.get('/api/oauth/callback', async (req, res) => {
 })
 
 
+// GoHighLevel User Context Decryption Endpoint (as per official documentation)
+app.post('/api/decrypt-user-data', async (req, res) => {
+  try {
+    const { GHL_SHARED_SECRET } = process.env
+    
+    if (!GHL_SHARED_SECRET) {
+      console.error(`[${new Date().toISOString()}] Missing GHL_SHARED_SECRET environment variable`)
+      return res.status(500).json({
+        success: false,
+        error: 'Server configuration error: Missing shared secret'
+      })
+    }
+
+    const { encryptedData } = req.body
+
+    // Input validation
+    if (!encryptedData) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing encrypted data'
+      })
+    }
+
+    // Decrypt using AES as specified in the official GoHighLevel documentation
+    let decryptedData
+    try {
+      const decryptedString = CryptoJS.AES.decrypt(encryptedData, GHL_SHARED_SECRET).toString(CryptoJS.enc.Utf8)
+      
+      if (!decryptedString) {
+        throw new Error('Decryption resulted in empty string')
+      }
+      
+      decryptedData = JSON.parse(decryptedString)
+    } catch (decryptError) {
+      console.error(`[${new Date().toISOString()}] Decryption failed:`, decryptError.message)
+      return res.status(400).json({
+        success: false,
+        error: 'Failed to decrypt user data'
+      })
+    }
+
+    // Validate required fields based on documentation
+    const { userId, companyId, role, type, userName, email } = decryptedData
+    
+    if (!userId || !companyId || !role || !type || !userName || !email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid user data: Missing required fields'
+      })
+    }
+
+    // Log the successful decryption (without sensitive data)
+    console.log(`[${new Date().toISOString()}] Successfully decrypted user context for user: ${userId}, type: ${type}`)
+
+    // Return the decrypted user data
+    res.json({
+      success: true,
+      userData: decryptedData
+    })
+
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] User context decryption error:`, error.message)
+    res.status(500).json({
+      success: false,
+      error: 'Failed to decrypt user data'
+    })
+  }
+})
+
 // GoHighLevel Authentication Endpoint (for encrypted payloads)
 app.post('/api/auth/ghl', async (req, res) => {
   try {
@@ -333,27 +403,26 @@ app.post('/api/auth/ghl', async (req, res) => {
       })
     }
 
-    const { encryptedPayload, iv } = req.body
+    const { encryptedPayload } = req.body
 
     // Input validation
-    if (!encryptedPayload || !iv) {
+    if (!encryptedPayload) {
       return res.status(400).json({
         success: false,
-        error: 'Missing encrypted payload or initialization vector'
+        error: 'Missing encrypted payload'
       })
     }
 
-    // Decrypt the GoHighLevel payload
+    // Decrypt the GoHighLevel payload using AES (as per official documentation)
     let decryptedString
     let decryptedData
     try {
-      const algorithm = 'aes-256-cbc'
-      const key = crypto.scryptSync(GHL_SHARED_SECRET, 'salt', 32)
-      const ivBuffer = Buffer.from(iv, 'hex')
-      const decipher = crypto.createDecipheriv(algorithm, key, ivBuffer)
+      // Decrypt using AES as specified in the official documentation
+      decryptedString = CryptoJS.AES.decrypt(encryptedPayload, GHL_SHARED_SECRET).toString(CryptoJS.enc.Utf8)
       
-      decryptedString = decipher.update(encryptedPayload, 'hex', 'utf8')
-      decryptedString += decipher.final('utf8')
+      if (!decryptedString) {
+        throw new Error('Decryption resulted in empty string')
+      }
     } catch (decryptError) {
       console.error(`[${new Date().toISOString()}] Decryption failed:`, decryptError.message)
       return res.status(400).json({
