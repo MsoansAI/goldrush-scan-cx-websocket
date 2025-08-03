@@ -295,7 +295,7 @@ describe('WebSocket Server', () => {
     })
 
     // Mock OAuth Initiate Endpoint
-    app.get('/api/ghl-oauth/initiate', (req, res) => {
+    app.get('/api/oauth/initiate', (req, res) => {
       const { GHL_CLIENT_ID, GHL_SCOPES } = process.env
 
       if (!GHL_CLIENT_ID || !GHL_SCOPES) {
@@ -307,7 +307,7 @@ describe('WebSocket Server', () => {
 
       // Define the redirect URI based on the current server URL
       const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
-      const GHL_REDIRECT_URI = `${serverUrl}/api/ghl-oauth/callback`
+      const GHL_REDIRECT_URI = `${serverUrl}/api/oauth/callback`
 
       // Get frontend URL from request origin or referer (for iframe support)
       const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
@@ -327,7 +327,7 @@ describe('WebSocket Server', () => {
     })
 
     // Mock OAuth Callback Endpoint
-    app.get('/api/ghl-oauth/callback', async (req, res) => {
+    app.get('/api/oauth/callback', async (req, res) => {
       const { code, state, error } = req.query
       
       // Get frontend URL from request origin or referer (for iframe support)
@@ -335,27 +335,27 @@ describe('WebSocket Server', () => {
 
       // Handle OAuth errors
       if (error) {
-        return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent(error)}`)
+        return res.redirect(`${frontendUrl}/oauth-status?status=error&message=${encodeURIComponent(error)}`)
       }
 
       if (!code) {
-        return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=No authorization code received`)
+        return res.redirect(`${frontendUrl}/oauth-status?status=error&message=No authorization code received`)
       }
 
       // Mock successful OAuth flow
       if (code === 'test-auth-code') {
         // Simulate successful token exchange and installation storage
-        const successUrl = `${frontendUrl}/ghl-oauth-status?status=success&locationId=test-location-123&locationName=${encodeURIComponent('Test Location')}`
+        const successUrl = `${frontendUrl}/oauth-status?status=success&locationId=test-location-123&locationName=${encodeURIComponent('Test Location')}`
         return res.redirect(successUrl)
       }
 
       // Mock error case
-              const errorUrl = `${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent('OAuth flow failed')}`
+              const errorUrl = `${frontendUrl}/oauth-status?status=error&message=${encodeURIComponent('OAuth flow failed')}`
         res.redirect(errorUrl)
     })
 
     // Mock GHL Locations List Endpoint
-    app.get('/api/ghl-locations', async (req, res) => {
+    app.get('/api/locations', async (req, res) => {
       const authHeader = req.headers.authorization
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({
@@ -401,7 +401,7 @@ describe('WebSocket Server', () => {
     })
 
     // Mock GHL API Proxy Endpoint
-    app.post('/api/ghl-proxy', async (req, res) => {
+    app.post('/api/proxy', async (req, res) => {
       const authHeader = req.headers.authorization
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({
@@ -1639,10 +1639,10 @@ describe('WebSocket Server', () => {
 
   describe('GoHighLevel OAuth Flow', () => {
     // OAuth Initiate Tests
-    describe('GET /api/ghl-oauth/initiate', () => {
+    describe('GET /api/oauth/initiate', () => {
       test('should redirect to GHL authorization URL with correct parameters', async () => {
         const response = await request(httpServer)
-          .get('/api/ghl-oauth/initiate')
+          .get('/api/oauth/initiate')
           .expect(302)
 
         const location = response.headers.location
@@ -1660,7 +1660,7 @@ describe('WebSocket Server', () => {
         delete process.env.GHL_CLIENT_ID
 
         const response = await request(httpServer)
-          .get('/api/ghl-oauth/initiate')
+          .get('/api/oauth/initiate')
           .expect(500)
 
         expect(response.body).toEqual({
@@ -1674,51 +1674,51 @@ describe('WebSocket Server', () => {
     })
 
     // OAuth Callback Tests  
-    describe('GET /api/ghl-oauth/callback', () => {
+          describe('GET /api/oauth/callback', () => {
       test('should handle successful OAuth callback and store installation', async () => {
         const response = await request(httpServer)
-          .get('/api/ghl-oauth/callback')
+          .get('/api/oauth/callback')
           .query({
             code: 'test-auth-code',
             state: 'test-state'
           })
           .expect(302)
 
-        expect(response.headers.location).toContain('ghl-oauth-status?status=success')
+        expect(response.headers.location).toContain('oauth-status?status=success')
         expect(response.headers.location).toContain('locationId=test-location-123')
       })
 
       test('should handle OAuth error from GHL', async () => {
         const response = await request(httpServer)
-          .get('/api/ghl-oauth/callback')
+          .get('/api/oauth/callback')
           .query({
             error: 'access_denied',
             error_description: 'User denied access'
           })
           .expect(302)
 
-        expect(response.headers.location).toContain('ghl-oauth-status?status=error')
+        expect(response.headers.location).toContain('oauth-status?status=error')
         expect(response.headers.location).toContain('message=access_denied')
       })
 
       test('should handle missing authorization code', async () => {
         const response = await request(httpServer)
-          .get('/api/ghl-oauth/callback')
+          .get('/api/oauth/callback')
           .query({
             state: 'test-state'
           })
           .expect(302)
 
-        expect(response.headers.location).toContain('ghl-oauth-status?status=error')
+        expect(response.headers.location).toContain('oauth-status?status=error')
         expect(response.headers.location).toContain('No%20authorization%20code%20received')
       })
     })
 
     // GHL Locations List Tests
-    describe('GET /api/ghl-locations', () => {
+    describe('GET /api/locations', () => {
       test('should return GHL locations for authenticated user', async () => {
         const response = await request(httpServer)
-          .get('/api/ghl-locations')
+          .get('/api/locations')
           .set('Authorization', 'Bearer valid-token')
           .expect(200)
 
@@ -1730,7 +1730,7 @@ describe('WebSocket Server', () => {
 
       test('should return 401 for unauthenticated request', async () => {
         const response = await request(httpServer)
-          .get('/api/ghl-locations')
+          .get('/api/locations')
           .expect(401)
 
         expect(response.body).toEqual({
@@ -1741,7 +1741,7 @@ describe('WebSocket Server', () => {
 
       test('should return 401 for invalid token', async () => {
         const response = await request(httpServer)
-          .get('/api/ghl-locations')
+          .get('/api/locations')
           .set('Authorization', 'Bearer invalid-token')
           .expect(401)
 
@@ -1753,7 +1753,7 @@ describe('WebSocket Server', () => {
     })
 
     // GHL API Proxy Tests
-    describe('POST /api/ghl-proxy', () => {
+    describe('POST /api/proxy', () => {
       test('should proxy GHL API calls successfully', async () => {
         const response = await request(httpServer)
           .post('/api/ghl-proxy')
@@ -2135,6 +2135,231 @@ describe('WebSocket Server', () => {
       expect(response.body).toEqual({
         success: false,
         error: 'Invalid role. Must be one of: admin, staff, member'
+      })
+    })
+  })
+
+  // GoHighLevel Credentials Authentication Integration
+  describe('POST /api/auth/ghl-credentials', () => {
+    const mockSupabaseUrl = 'https://test.supabase.co'
+    const mockSupabaseServiceKey = 'test-service-role-key'
+
+    beforeAll(() => {
+      process.env.SUPABASE_URL = mockSupabaseUrl
+      process.env.SUPABASE_SERVICE_ROLE_KEY = mockSupabaseServiceKey
+    })
+
+    afterAll(() => {
+      process.env = originalEnv
+    })
+
+    // Mock GHL Credentials Authentication Endpoint
+    httpServer._events.request = (req, res) => {
+      if (req.method === 'POST' && req.url === '/api/auth/ghl-credentials') {
+        let body = ''
+        req.on('data', chunk => {
+          body += chunk.toString()
+        })
+        req.on('end', () => {
+          try {
+            const { email, password, ghl_user_id, role, first_name, last_name } = JSON.parse(body)
+      const { email, password, ghl_user_id, role, first_name, last_name } = req.body
+
+      // Validate required fields
+      if (!email || !password || !ghl_user_id || !role) {
+        return res.status(400).json({
+          success: false,
+          error: 'Missing required fields: email, password, ghl_user_id, and role are required'
+        })
+      }
+
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid email format'
+        })
+      }
+
+      // Validate role
+      const validRoles = ['admin', 'staff']
+      if (!validRoles.includes(role)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid role. Must be "admin" or "staff"'
+        })
+      }
+
+      // Simulate successful authentication
+      if (email === 'test@example.com' && password === 'validpassword') {
+        return res.json({
+          success: true,
+          user: {
+            id: 'test-user-id',
+            email: email,
+            ghl_user_id: ghl_user_id,
+            role: role
+          },
+          tokens: {
+            access_token: 'test-access-token',
+            refresh_token: 'test-refresh-token',
+            expires_in: 3600
+          },
+          isNewUser: false
+        })
+      }
+
+      // Simulate new user creation
+      if (email === 'newuser@example.com' && password === 'newpassword') {
+        return res.json({
+          success: true,
+          user: {
+            id: 'new-user-id',
+            email: email,
+            ghl_user_id: ghl_user_id,
+            role: role
+          },
+          tokens: {
+            access_token: 'new-access-token',
+            refresh_token: 'new-refresh-token',
+            expires_in: 3600
+          },
+          isNewUser: true
+        })
+      }
+
+      // Simulate authentication error
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid credentials'
+      })
+    })
+
+    test('should authenticate with valid GHL credentials and return Supabase tokens', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl-credentials')
+        .send({
+          email: 'test@example.com',
+          password: 'validpassword',
+          ghl_user_id: 'ghl_user_123',
+          role: 'staff',
+          first_name: 'John',
+          last_name: 'Doe'
+        })
+        .expect(200)
+
+      expect(response.body).toEqual({
+        success: true,
+        user: {
+          id: 'test-user-id',
+          email: 'test@example.com',
+          ghl_user_id: 'ghl_user_123',
+          role: 'staff'
+        },
+        tokens: {
+          access_token: 'test-access-token',
+          refresh_token: 'test-refresh-token',
+          expires_in: 3600
+        },
+        isNewUser: false
+      })
+    })
+
+    test('should create new user with valid GHL credentials', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl-credentials')
+        .send({
+          email: 'newuser@example.com',
+          password: 'newpassword',
+          ghl_user_id: 'ghl_user_456',
+          role: 'admin',
+          first_name: 'Jane',
+          last_name: 'Smith'
+        })
+        .expect(200)
+
+      expect(response.body).toEqual({
+        success: true,
+        user: {
+          id: 'new-user-id',
+          email: 'newuser@example.com',
+          ghl_user_id: 'ghl_user_456',
+          role: 'admin'
+        },
+        tokens: {
+          access_token: 'new-access-token',
+          refresh_token: 'new-refresh-token',
+          expires_in: 3600
+        },
+        isNewUser: true
+      })
+    })
+
+    test('should return 400 for missing required fields', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl-credentials')
+        .send({
+          email: 'test@example.com',
+          password: 'validpassword'
+          // Missing ghl_user_id and role
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Missing required fields: email, password, ghl_user_id, and role are required'
+      })
+    })
+
+    test('should return 400 for invalid email format', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl-credentials')
+        .send({
+          email: 'invalid-email',
+          password: 'validpassword',
+          ghl_user_id: 'ghl_user_123',
+          role: 'staff'
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Invalid email format'
+      })
+    })
+
+    test('should return 400 for invalid role', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl-credentials')
+        .send({
+          email: 'test@example.com',
+          password: 'validpassword',
+          ghl_user_id: 'ghl_user_123',
+          role: 'invalid_role'
+        })
+        .expect(400)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Invalid role. Must be "admin" or "staff"'
+      })
+    })
+
+    test('should return 401 for invalid credentials', async () => {
+      const response = await request(httpServer)
+        .post('/api/auth/ghl-credentials')
+        .send({
+          email: 'invalid@example.com',
+          password: 'wrongpassword',
+          ghl_user_id: 'ghl_user_123',
+          role: 'staff'
+        })
+        .expect(401)
+
+      expect(response.body).toEqual({
+        success: false,
+        error: 'Invalid credentials'
       })
     })
   })

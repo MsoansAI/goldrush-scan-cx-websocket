@@ -177,7 +177,7 @@ app.post('/api/messages/cleanup', (req, res) => {
 // ============================================================================
 
 // OAuth Initiate Endpoint - Phase 1
-app.get('/api/ghl-oauth/initiate', (req, res) => {
+app.get('/api/oauth/initiate', (req, res) => {
   try {
     const { GHL_CLIENT_ID, GHL_SCOPES } = process.env
 
@@ -194,7 +194,7 @@ app.get('/api/ghl-oauth/initiate', (req, res) => {
 
     // Define the redirect URI based on the current server URL
     const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
-    const GHL_REDIRECT_URI = `${serverUrl}/api/ghl-oauth/callback`
+    const GHL_REDIRECT_URI = `${serverUrl}/api/oauth/callback`
 
     // Construct GoHighLevel Authorization URL
     const authUrl = new URL('https://oauth.integrately.com/oauth/authorize')
@@ -222,14 +222,14 @@ app.get('/api/ghl-oauth/initiate', (req, res) => {
 })
 
 // OAuth Callback Endpoint - Phase 1
-app.get('/api/ghl-oauth/callback', async (req, res) => {
+app.get('/api/oauth/callback', async (req, res) => {
   try {
     const { code, state, error } = req.query
     const { GHL_CLIENT_ID, GHL_CLIENT_SECRET } = process.env
 
     // Define the redirect URI based on the current server URL (must match the one used in initiate)
     const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
-    const GHL_REDIRECT_URI = `${serverUrl}/api/ghl-oauth/callback`
+    const GHL_REDIRECT_URI = `${serverUrl}/api/oauth/callback`
 
     // Get frontend URL from request origin or referer (for iframe support)
     const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
@@ -237,17 +237,17 @@ app.get('/api/ghl-oauth/callback', async (req, res) => {
     // Handle OAuth errors
     if (error) {
       console.error(`[${new Date().toISOString()}] OAuth callback error from GHL:`, error)
-      return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent(error)}`)
+      return res.redirect(`${frontendUrl}/oauth-status?status=error&message=${encodeURIComponent(error)}`)
     }
 
     if (!code) {
       console.error(`[${new Date().toISOString()}] No authorization code received`)
-      return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=No authorization code received`)
+      return res.redirect(`${frontendUrl}/oauth-status?status=error&message=No authorization code received`)
     }
 
     if (!GHL_CLIENT_ID || !GHL_CLIENT_SECRET || !GHL_REDIRECT_URI) {
       console.error(`[${new Date().toISOString()}] Missing OAuth client credentials`)
-      return res.redirect(`${frontendUrl}/ghl-oauth-status?status=error&message=OAuth configuration incomplete`)
+      return res.redirect(`${frontendUrl}/oauth-status?status=error&message=OAuth configuration incomplete`)
     }
 
     console.log(`[${new Date().toISOString()}] Processing OAuth callback with code: ${code.substring(0, 10)}...`)
@@ -361,7 +361,7 @@ app.get('/api/ghl-oauth/callback', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Successfully stored GHL installation with ID: ${installationData}`)
 
     // Step 5: Redirect to frontend success page
-    const successUrl = `${frontendUrl}/ghl-oauth-status?status=success&locationId=${ghlLocationId}&locationName=${encodeURIComponent(locationName || 'Unknown Location')}`
+    const successUrl = `${frontendUrl}/oauth-status?status=success&locationId=${ghlLocationId}&locationName=${encodeURIComponent(locationName || 'Unknown Location')}`
     res.redirect(successUrl)
 
   } catch (error) {
@@ -377,7 +377,7 @@ app.get('/api/ghl-oauth/callback', async (req, res) => {
       errorMessage = error.message
     }
 
-    const errorUrl = `${frontendUrl}/ghl-oauth-status?status=error&message=${encodeURIComponent(errorMessage)}`
+    const errorUrl = `${frontendUrl}/oauth-status?status=error&message=${encodeURIComponent(errorMessage)}`
     res.redirect(errorUrl)
   }
 })
@@ -657,6 +657,270 @@ app.post('/api/auth/ghl', async (req, res) => {
   }
 })
 
+// Credentials Authentication Endpoint (for direct credentials)
+app.post('/api/auth/credentials', async (req, res) => {
+  try {
+    const { email, password, ghl_user_id, role, first_name, last_name } = req.body
+
+    // Validate required fields
+    if (!email || !password || !ghl_user_id || !role) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: email, password, ghl_user_id, and role are required'
+      })
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid email format'
+      })
+    }
+
+    // Validate role
+    const validRoles = ['admin', 'staff']
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid role. Must be "admin" or "staff"'
+      })
+    }
+
+    // Environment variables validation
+    const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = process.env
+    
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      console.error(`[${new Date().toISOString()}] Missing environment variables for GHL credentials auth`)
+      return res.status(500).json({
+        success: false,
+        error: 'Server configuration error: Missing required environment variables'
+      })
+    }
+
+    // Initialize Supabase client
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    })
+
+    console.log(`[${new Date().toISOString()}] Processing credentials authentication for: ${email}`)
+
+    // Check if user already exists
+    const { data: existingUsers, error: getUserError } = await supabase.auth.admin.listUsers()
+    
+    if (getUserError) {
+      console.error(`[${new Date().toISOString()}] Error listing users:`, getUserError.message)
+      return res.status(500).json({
+        success: false,
+        error: 'Authentication service unavailable'
+      })
+    }
+
+    const existingUser = existingUsers.users.find(user => 
+      user.email === email || 
+      (user.user_metadata && user.user_metadata.ghl_user_id === ghl_user_id)
+    )
+
+    let authResult
+    let isNewUser = false
+
+    if (existingUser) {
+      console.log(`[${new Date().toISOString()}] Existing user found: ${email}`)
+      
+      // Update user metadata if needed
+      const updatedMetadata = {
+        ...existingUser.user_metadata,
+        ghl_user_id: ghl_user_id,
+        role: role,
+        updated_at: new Date().toISOString()
+      }
+
+      const { data: updateData, error: updateError } = await supabase.auth.admin.updateUserById(
+        existingUser.id,
+        {
+          user_metadata: updatedMetadata
+        }
+      )
+
+      if (updateError) {
+        console.error(`[${new Date().toISOString()}] Error updating user:`, updateError.message)
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to update user profile'
+        })
+      }
+
+      // Generate login tokens
+      const { data: tokenData, error: tokenError } = await supabase.auth.admin.generateLink({
+        type: 'magiclink',
+        email: email
+      })
+
+      if (tokenError) {
+        console.error(`[${new Date().toISOString()}] Error generating tokens:`, tokenError.message)
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to generate authentication tokens'
+        })
+      }
+
+      const accessToken = tokenData.properties?.access_token
+      const refreshToken = tokenData.properties?.refresh_token
+
+      if (!accessToken || !refreshToken) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to generate valid tokens'
+        })
+      }
+
+      authResult = {
+        user: {
+          id: existingUser.id,
+          email: existingUser.email,
+          ghl_user_id: ghl_user_id,
+          role: role
+        },
+        tokens: {
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          expires_in: 3600 // 1 hour
+        }
+      }
+
+      // Update internal_users table
+      try {
+        const { error: updateError } = await supabase
+          .from('internal_users')
+          .update({
+            ghl_user_id: ghl_user_id,
+            role: role,
+            first_name: first_name || null,
+            last_name: last_name || null,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existingUser.id)
+
+        if (updateError) {
+          console.warn(`[${new Date().toISOString()}] Failed to update internal_users table:`, updateError.message)
+        } else {
+          console.log(`[${new Date().toISOString()}] Updated internal_users record for ${email}`)
+        }
+      } catch (tableError) {
+        console.warn(`[${new Date().toISOString()}] internal_users table operation failed:`, tableError.message)
+      }
+
+    } else {
+      console.log(`[${new Date().toISOString()}] Creating new user: ${email}`)
+      isNewUser = true
+
+      // Create new user
+      const { data: newUserData, error: createError } = await supabase.auth.admin.createUser({
+        email: email,
+        password: password,
+        user_metadata: {
+          ghl_user_id: ghl_user_id,
+          role: role,
+          created_at: new Date().toISOString()
+        }
+      })
+
+      if (createError) {
+        console.error(`[${new Date().toISOString()}] Error creating user:`, createError.message)
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to create user account'
+        })
+      }
+
+      // Generate login tokens
+      const { data: tokenData, error: tokenError } = await supabase.auth.admin.generateLink({
+        type: 'magiclink',
+        email: email
+      })
+
+      if (tokenError) {
+        console.error(`[${new Date().toISOString()}] Error generating tokens:`, tokenError.message)
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to generate authentication tokens'
+        })
+      }
+
+      const accessToken = tokenData.properties?.access_token
+      const refreshToken = tokenData.properties?.refresh_token
+
+      if (!accessToken || !refreshToken) {
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to generate valid tokens'
+        })
+      }
+
+      authResult = {
+        user: {
+          id: newUserData.user.id,
+          email: newUserData.user.email,
+          ghl_user_id: ghl_user_id,
+          role: role
+        },
+        tokens: {
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          expires_in: 3600 // 1 hour
+        }
+      }
+
+      // Create entry in internal_users table
+      try {
+        const { error: insertError } = await supabase
+          .from('internal_users')
+          .insert([
+            {
+              id: newUserData.user.id,
+              email: email,
+              ghl_user_id: ghl_user_id,
+              role: role,
+              first_name: first_name || null,
+              last_name: last_name || null,
+              created_at: new Date().toISOString(),
+              is_active: true
+            }
+          ])
+
+        if (insertError) {
+          console.warn(`[${new Date().toISOString()}] Failed to insert into internal_users table:`, insertError.message)
+        } else {
+          console.log(`[${new Date().toISOString()}] Created internal_users record for ${email}`)
+        }
+      } catch (tableError) {
+        console.warn(`[${new Date().toISOString()}] internal_users table operation failed:`, tableError.message)
+      }
+    }
+
+    console.log(`[${new Date().toISOString()}] Credentials authentication successful for user: ${email}`)
+
+    // Return success response
+    res.json({
+      success: true,
+      user: authResult.user,
+      tokens: authResult.tokens,
+      isNewUser: isNewUser
+    })
+
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Credentials auth endpoint error:`, error.message)
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    })
+  }
+})
+
 // ============================================================================
 // PHASE 2: TOKEN REFRESH MECHANISM
 // ============================================================================
@@ -794,7 +1058,7 @@ cron.schedule('0 * * * *', async () => {
 // ============================================================================
 
 // List GHL Installations/Locations
-app.get('/api/ghl-locations', async (req, res) => {
+app.get('/api/locations', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -874,7 +1138,7 @@ app.get('/api/ghl-locations', async (req, res) => {
 })
 
 // GHL API Proxy - Generic endpoint for proxying GHL API calls
-app.post('/api/ghl-proxy', async (req, res) => {
+app.post('/api/proxy', async (req, res) => {
   try {
     const authHeader = req.headers.authorization
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
