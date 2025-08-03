@@ -313,7 +313,7 @@ describe('WebSocket Server', () => {
       const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
 
       // Construct authorization URL
-      const authUrl = new URL('https://oauth.integrately.com/oauth/authorize')
+      const authUrl = new URL('https://app.msoans.ai/oauth/authorize')
       authUrl.searchParams.append('client_id', GHL_CLIENT_ID)
       authUrl.searchParams.append('redirect_uri', GHL_REDIRECT_URI)
       authUrl.searchParams.append('scope', GHL_SCOPES)
@@ -1646,7 +1646,7 @@ describe('WebSocket Server', () => {
           .expect(302)
 
         const location = response.headers.location
-        expect(location).toContain('https://oauth.integrately.com/oauth/authorize')
+        expect(location).toContain('https://app.msoans.ai/oauth/authorize')
         expect(location).toContain('client_id=test-client-id')
         expect(location).toContain('redirect_uri=')
         expect(location).toMatch(/scope=locations\.readonly[\+%20]users\.readonly/)
