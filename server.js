@@ -196,8 +196,8 @@ app.get('/api/oauth/initiate', (req, res) => {
     const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
     const GHL_REDIRECT_URI = `${serverUrl}/api/oauth/callback`
 
-    // Construct MSOANS.AI (whitelabel) Authorization URL
-    const authUrl = new URL('https://app.msoans.ai/oauth/authorize')
+    // Construct GoHighLevel Authorization URL (standard OAuth endpoint)
+    const authUrl = new URL('https://services.leadconnectorhq.com/oauth/authorize')
     authUrl.searchParams.append('client_id', GHL_CLIENT_ID)
     authUrl.searchParams.append('redirect_uri', GHL_REDIRECT_URI)
     authUrl.searchParams.append('scope', GHL_SCOPES)
@@ -253,7 +253,7 @@ app.get('/api/oauth/callback', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Processing OAuth callback with code: ${code.substring(0, 10)}...`)
 
     // Step 1: Exchange code for agency tokens
-    const tokenResponse = await axios.post('https://app.msoans.ai/oauth/token', {
+    const tokenResponse = await axios.post('https://services.leadconnectorhq.com/oauth/token', {
       grant_type: 'authorization_code',
       code: code,
       client_id: GHL_CLIENT_ID,
