@@ -176,47 +176,24 @@ app.post('/api/messages/cleanup', (req, res) => {
 // GOHIGHLEVEL OAUTH FLOW ENDPOINTS
 // ============================================================================
 
-// OAuth Initiate Endpoint - Phase 1
+// OAuth Initiate Endpoint - Redirects to marketplace installation
 app.get('/api/oauth/initiate', (req, res) => {
   try {
-    const { GHL_CLIENT_ID, GHL_SCOPES } = process.env
-
-    if (!GHL_CLIENT_ID || !GHL_SCOPES) {
-      console.error(`[${new Date().toISOString()}] Missing OAuth environment variables`)
-      return res.status(500).json({
-        success: false,
-        error: 'OAuth configuration incomplete'
-      })
-    }
-
-    // Get frontend URL from request origin or referer (for iframe support)
-    const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
-
-    // Define the redirect URI based on the current server URL
-    const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`
-    const GHL_REDIRECT_URI = `${serverUrl}/api/oauth/callback`
-
-    // Construct GoHighLevel Authorization URL (standard OAuth endpoint)
-    const authUrl = new URL('https://services.leadconnectorhq.com/oauth/authorize')
-    authUrl.searchParams.append('client_id', GHL_CLIENT_ID)
-    authUrl.searchParams.append('redirect_uri', GHL_REDIRECT_URI)
-    authUrl.searchParams.append('scope', GHL_SCOPES)
-    authUrl.searchParams.append('response_type', 'code')
+    // For GoHighLevel Marketplace Apps, users need to install the app from the marketplace first
+    // This endpoint redirects them to the marketplace where they can install the app
     
-    // Optional: Add state parameter for CSRF protection
-    const state = crypto.randomBytes(32).toString('hex')
-    authUrl.searchParams.append('state', state)
+    const marketplaceUrl = 'https://marketplace.gohighlevel.com'
     
-    console.log(`[${new Date().toISOString()}] Initiating GHL OAuth flow, redirecting to: ${authUrl.toString()}`)
+    console.log(`[${new Date().toISOString()}] Redirecting to GoHighLevel Marketplace for app installation`)
     
-    // Redirect to GoHighLevel authorization server
-    res.redirect(authUrl.toString())
+    // Redirect to the marketplace where users can install the app
+    res.redirect(marketplaceUrl)
     
   } catch (error) {
     console.error(`[${new Date().toISOString()}] OAuth initiate error:`, error.message)
     res.status(500).json({
       success: false,
-      error: 'Failed to initiate OAuth flow'
+      error: 'Failed to redirect to marketplace'
     })
   }
 })
@@ -252,8 +229,8 @@ app.get('/api/oauth/callback', async (req, res) => {
 
     console.log(`[${new Date().toISOString()}] Processing OAuth callback with code: ${code.substring(0, 10)}...`)
 
-    // Step 1: Exchange code for agency tokens
-    const tokenResponse = await axios.post('https://services.leadconnectorhq.com/oauth/token', {
+    // Step 1: Exchange code for agency tokens using GoHighLevel API
+    const tokenResponse = await axios.post('https://rest.gohighlevel.com/v1/oauth/token', {
       grant_type: 'authorization_code',
       code: code,
       client_id: GHL_CLIENT_ID,
@@ -366,6 +343,9 @@ app.get('/api/oauth/callback', async (req, res) => {
 
   } catch (error) {
     console.error(`[${new Date().toISOString()}] OAuth callback error:`, error.message)
+    
+    // Get frontend URL for error redirect (define it here since it might not be defined in catch block)
+    const frontendUrl = req.headers.origin || req.headers.referer?.replace(/\/[^\/]*$/, '') || 'https://grsc-scan-frontend.vercel.app'
     
     // Extract meaningful error message
     let errorMessage = 'OAuth flow failed'
