@@ -8,6 +8,9 @@ const CryptoJS = require('crypto-js')
 const axios = require('axios')
 const cron = require('node-cron')
 const { createClient } = require('@supabase/supabase-js')
+const { getAdminClient, getUserClient } = require('./src/lib/supabase')
+const { requireAuth } = require('./src/middleware/auth')
+const { storeInstallation, getLocationToken, refreshLocationToken } = require('./src/services/ghlService')
 require('dotenv').config()
 
 const app = express()
@@ -257,12 +260,7 @@ app.get('/api/oauth/callback', async (req, res) => {
     // Step 2: Store installation in database
     // For marketplace apps, we typically store the agency token
     // Location-specific information is usually provided via webhooks or can be retrieved later
-    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    })
+    const supabase = getAdminClient()
 
     // Calculate token expiry time
     const agencyExpiresAt = new Date(Date.now() + (expires_in * 1000))
@@ -273,18 +271,18 @@ app.get('/api/oauth/callback', async (req, res) => {
     const placeholderAgencyId = 'marketplace-agency'
 
     // Store installation using our secure function (simplified for marketplace apps)
-    const { data: installationData, error: storageError } = await supabase.rpc('store_ghl_installation', {
-      p_ghl_agency_id: placeholderAgencyId,
-      p_ghl_location_id: placeholderLocationId,
-      p_agency_access_token: agencyToken,
-      p_agency_refresh_token: agencyRefreshToken,
-      p_agency_token_expires_at: agencyExpiresAt.toISOString(),
-      p_location_access_token: agencyToken, // Using agency token for now
-      p_location_refresh_token: agencyRefreshToken,
-      p_location_token_expires_at: agencyExpiresAt.toISOString(),
-      p_installed_by_user_id: null, // Will be populated when user context is available
-      p_location_name: 'Marketplace Installation',
-      p_location_address: null
+    const { data: installationData, error: storageError } = await storeInstallation({
+      ghlAgencyId: placeholderAgencyId,
+      ghlLocationId: placeholderLocationId,
+      agencyAccessToken: agencyToken,
+      agencyRefreshToken: agencyRefreshToken,
+      agencyExpiresAt: agencyExpiresAt.toISOString(),
+      locationAccessToken: agencyToken,
+      locationRefreshToken: agencyRefreshToken,
+      locationExpiresAt: agencyExpiresAt.toISOString(),
+      installedByUserId: null,
+      locationName: 'Marketplace Installation',
+      locationAddress: null
     })
 
     if (storageError) {
@@ -933,17 +931,12 @@ app.post('/api/auth/credentials', async (req, res) => {
 // Function to refresh GHL tokens
 async function refreshGHLTokens(installationId, currentLocationRefreshToken) {
   try {
-    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    })
+    const supabase = getAdminClient()
 
-    // Get current installation details
+    // Get current installation details (select only required columns)
     const { data: installation, error: getError } = await supabase
       .from('ghl_installations')
-      .select('*')
+      .select('id, ghl_agency_id, ghl_location_id, agency_access_token, agency_refresh_token, agency_token_expires_at, location_name, location_address, installed_by_user_id')
       .eq('id', installationId)
       .single()
 
@@ -970,24 +963,20 @@ async function refreshGHLTokens(installationId, currentLocationRefreshToken) {
 
     // Update tokens in database
     const newExpiresAt = new Date(Date.now() + (expires_in * 1000))
-    
-    const { error: updateError } = await supabase.rpc('store_ghl_installation', {
-      p_ghl_agency_id: installation.ghl_agency_id,
-      p_ghl_location_id: installation.ghl_location_id,
-      p_agency_access_token: installation.agency_access_token, // Keep existing
-      p_agency_refresh_token: installation.agency_refresh_token, // Keep existing  
-      p_agency_token_expires_at: installation.agency_token_expires_at, // Keep existing
-      p_location_access_token: newLocationToken,
-      p_location_refresh_token: newLocationRefreshToken,
-      p_location_token_expires_at: newExpiresAt.toISOString(),
-      p_installed_by_user_id: installation.installed_by_user_id,
-      p_location_name: installation.location_name,
-      p_location_address: installation.location_address
-    })
 
-    if (updateError) {
-      throw new Error(`Failed to update tokens: ${updateError.message}`)
-    }
+    await storeInstallation({
+      ghlAgencyId: installation.ghl_agency_id,
+      ghlLocationId: installation.ghl_location_id,
+      agencyAccessToken: installation.agency_access_token,
+      agencyRefreshToken: installation.agency_refresh_token,
+      agencyExpiresAt: installation.agency_token_expires_at,
+      locationAccessToken: newLocationToken,
+      locationRefreshToken: newLocationRefreshToken,
+      locationExpiresAt: newExpiresAt.toISOString(),
+      installedByUserId: installation.installed_by_user_id,
+      locationName: installation.location_name,
+      locationAddress: installation.location_address
+    })
 
     console.log(`[${new Date().toISOString()}] Successfully refreshed tokens for location: ${installation.ghl_location_id}`)
     return newLocationToken
@@ -1003,19 +992,14 @@ cron.schedule('0 * * * *', async () => {
   try {
     console.log(`[${new Date().toISOString()}] Running scheduled token refresh check`)
     
-    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    })
+    const supabase = getAdminClient()
 
     // Find installations with tokens expiring in the next 2 hours
     const expiryThreshold = new Date(Date.now() + (2 * 60 * 60 * 1000)) // 2 hours from now
 
     const { data: installations, error } = await supabase
       .from('ghl_installations')
-      .select('id, ghl_location_id, location_refresh_token, location_token_expires_at')
+      .select('id, ghl_location_id')
       .eq('installation_status', 'active')
       .lt('location_token_expires_at', expiryThreshold.toISOString())
 
@@ -1035,9 +1019,7 @@ cron.schedule('0 * * * *', async () => {
     for (const installation of installations) {
       try {
         // Decrypt the refresh token
-        const { data: tokenData } = await supabase.rpc('get_ghl_location_token', {
-          p_ghl_location_id: installation.ghl_location_id
-        })
+        const { data: tokenData } = await getLocationToken(installation.ghl_location_id)
 
         if (tokenData && tokenData.length > 0) {
           await refreshGHLTokens(installation.id, tokenData[0].location_refresh_token)
@@ -1063,55 +1045,22 @@ cron.schedule('0 * * * *', async () => {
 // ============================================================================
 
 // List GHL Installations/Locations
-app.get('/api/locations', async (req, res) => {
+app.get('/api/locations', requireAuth, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'Authentication required'
-      })
-    }
-
-    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    })
-
-    // Get user from token
-    const token = authHeader.split(' ')[1]
-    const { data: user, error: userError } = await supabase.auth.getUser(token)
-    
-    if (userError || !user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid authentication token'
-      })
-    }
-
-    console.log(`[${new Date().toISOString()}] Fetching GHL locations for user: ${user.user.email}`)
+    const supabase = getAdminClient()
+    const user = req.user
+    console.log(`[${new Date().toISOString()}] Fetching GHL locations for user: ${user.email}`)
 
     // Check if user is admin (can see all) or staff (can see based on permissions)
     const { data: internalUser } = await supabase
       .from('internal_users')
       .select('role')
-      .eq('id', user.user.id)
+      .eq('id', user.id)
       .single()
 
     let query = supabase
       .from('ghl_installations')
-      .select(`
-        id,
-        ghl_agency_id,
-        ghl_location_id,
-        location_name,
-        location_address,
-        installation_status,
-        created_at,
-        updated_at
-      `)
+      .select('id, ghl_agency_id, ghl_location_id, location_name, location_address, installation_status, created_at, updated_at')
       .eq('installation_status', 'active')
 
     // If not admin, filter based on user permissions (future enhancement)
@@ -1143,16 +1092,8 @@ app.get('/api/locations', async (req, res) => {
 })
 
 // GHL API Proxy - Generic endpoint for proxying GHL API calls
-app.post('/api/proxy', async (req, res) => {
+app.post('/api/proxy', requireAuth, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'Authentication required'
-      })
-    }
-
     const { ghl_location_id, endpoint, method = 'GET', data: requestData } = req.body
 
     if (!ghl_location_id || !endpoint) {
@@ -1162,30 +1103,12 @@ app.post('/api/proxy', async (req, res) => {
       })
     }
 
-    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    })
-
-    // Authenticate user
-    const token = authHeader.split(' ')[1]
-    const { data: user, error: userError } = await supabase.auth.getUser(token)
-    
-    if (userError || !user) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid authentication token'
-      })
-    }
-
-    console.log(`[${new Date().toISOString()}] GHL API proxy request - User: ${user.user.email}, Location: ${ghl_location_id}, Endpoint: ${endpoint}`)
+    const supabase = getAdminClient()
+    const user = req.user
+    console.log(`[${new Date().toISOString()}] GHL API proxy request - User: ${user.email}, Location: ${ghl_location_id}, Endpoint: ${endpoint}`)
 
     // Get location token
-    const { data: tokenData, error: tokenError } = await supabase.rpc('get_ghl_location_token', {
-      p_ghl_location_id: ghl_location_id
-    })
+    const { data: tokenData, error: tokenError } = await getLocationToken(ghl_location_id)
 
     if (tokenError || !tokenData || tokenData.length === 0) {
       return res.status(404).json({

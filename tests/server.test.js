@@ -472,6 +472,39 @@ describe('WebSocket Server', () => {
       })
     })
 
+    // Mock GHL Credentials Authentication Endpoint (JSON)
+    app.post('/api/auth/ghl-credentials', (req, res) => {
+      const { email, password, ghl_user_id, role, first_name, last_name } = req.body
+      if (!email || !password || !ghl_user_id || !role) {
+        return res.status(400).json({ success: false, error: 'Missing required fields: email, password, ghl_user_id, and role are required' })
+      }
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ success: false, error: 'Invalid email format' })
+      }
+      const validRoles = ['admin', 'staff']
+      if (!validRoles.includes(role)) {
+        return res.status(400).json({ success: false, error: 'Invalid role. Must be "admin" or "staff"' })
+      }
+      if (email === 'test@example.com' && password === 'validpassword') {
+        return res.json({
+          success: true,
+          user: { id: 'test-user-id', email, ghl_user_id, role },
+          tokens: { access_token: 'test-access-token', refresh_token: 'test-refresh-token', expires_in: 3600 },
+          isNewUser: false
+        })
+      }
+      if (email === 'newuser@example.com' && password === 'newpassword') {
+        return res.json({
+          success: true,
+          user: { id: 'new-user-id', email, ghl_user_id, role },
+          tokens: { access_token: 'new-access-token', refresh_token: 'new-refresh-token', expires_in: 3600 },
+          isNewUser: true
+        })
+      }
+      return res.status(401).json({ success: false, error: 'Invalid credentials' })
+    })
+
     httpServer = createServer(app)
     ioServer = new Server(httpServer, {
       cors: {
@@ -1756,7 +1789,7 @@ describe('WebSocket Server', () => {
     describe('POST /api/proxy', () => {
       test('should proxy GHL API calls successfully', async () => {
         const response = await request(httpServer)
-          .post('/api/ghl-proxy')
+          .post('/api/proxy')
           .set('Authorization', 'Bearer valid-token')
           .send({
             ghl_location_id: 'test-location-123',
@@ -1774,7 +1807,7 @@ describe('WebSocket Server', () => {
 
       test('should return 401 for unauthenticated proxy request', async () => {
         const response = await request(httpServer)
-          .post('/api/ghl-proxy')
+          .post('/api/proxy')
           .send({
             ghl_location_id: 'test-location-123',
             endpoint: '/contacts'
@@ -1789,7 +1822,7 @@ describe('WebSocket Server', () => {
 
       test('should return 400 for missing required fields', async () => {
         const response = await request(httpServer)
-          .post('/api/ghl-proxy')
+          .post('/api/proxy')
           .set('Authorization', 'Bearer valid-token')
           .send({
             endpoint: '/contacts'
@@ -1804,7 +1837,7 @@ describe('WebSocket Server', () => {
 
       test('should return 404 for non-existent GHL location', async () => {
         const response = await request(httpServer)
-          .post('/api/ghl-proxy')
+          .post('/api/proxy')
           .set('Authorization', 'Bearer valid-token')
           .send({
             ghl_location_id: 'non-existent-location',
@@ -1820,7 +1853,7 @@ describe('WebSocket Server', () => {
 
       test('should handle token refresh when token is expired', async () => {
         const response = await request(httpServer)
-          .post('/api/ghl-proxy')
+          .post('/api/proxy')
           .set('Authorization', 'Bearer valid-token')
           .send({
             ghl_location_id: 'expired-token-location',
@@ -1850,9 +1883,7 @@ describe('WebSocket Server', () => {
       process.env.SUPABASE_SERVICE_ROLE_KEY = mockSupabaseServiceKey
     })
 
-    afterAll(() => {
-      process.env = originalEnv
-    })
+    // no-op
 
     // Helper function to encrypt payload (simulates GoHighLevel encryption)
     const encryptPayload = (data, secret) => {
@@ -2149,92 +2180,9 @@ describe('WebSocket Server', () => {
       process.env.SUPABASE_SERVICE_ROLE_KEY = mockSupabaseServiceKey
     })
 
-    afterAll(() => {
-      process.env = originalEnv
-    })
+    // no afterAll env restore needed in mocked server
 
-    // Mock GHL Credentials Authentication Endpoint
-    httpServer._events.request = (req, res) => {
-      if (req.method === 'POST' && req.url === '/api/auth/ghl-credentials') {
-        let body = ''
-        req.on('data', chunk => {
-          body += chunk.toString()
-        })
-        req.on('end', () => {
-          try {
-            const { email, password, ghl_user_id, role, first_name, last_name } = JSON.parse(body)
-      const { email, password, ghl_user_id, role, first_name, last_name } = req.body
-
-      // Validate required fields
-      if (!email || !password || !ghl_user_id || !role) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields: email, password, ghl_user_id, and role are required'
-        })
-      }
-
-      // Validate email format
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-      if (!emailRegex.test(email)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid email format'
-        })
-      }
-
-      // Validate role
-      const validRoles = ['admin', 'staff']
-      if (!validRoles.includes(role)) {
-        return res.status(400).json({
-          success: false,
-          error: 'Invalid role. Must be "admin" or "staff"'
-        })
-      }
-
-      // Simulate successful authentication
-      if (email === 'test@example.com' && password === 'validpassword') {
-        return res.json({
-          success: true,
-          user: {
-            id: 'test-user-id',
-            email: email,
-            ghl_user_id: ghl_user_id,
-            role: role
-          },
-          tokens: {
-            access_token: 'test-access-token',
-            refresh_token: 'test-refresh-token',
-            expires_in: 3600
-          },
-          isNewUser: false
-        })
-      }
-
-      // Simulate new user creation
-      if (email === 'newuser@example.com' && password === 'newpassword') {
-        return res.json({
-          success: true,
-          user: {
-            id: 'new-user-id',
-            email: email,
-            ghl_user_id: ghl_user_id,
-            role: role
-          },
-          tokens: {
-            access_token: 'new-access-token',
-            refresh_token: 'new-refresh-token',
-            expires_in: 3600
-          },
-          isNewUser: true
-        })
-      }
-
-      // Simulate authentication error
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      })
-    })
+    // Removed low-level httpServer override
 
     test('should authenticate with valid GHL credentials and return Supabase tokens', async () => {
       const response = await request(httpServer)
